@@ -27,12 +27,25 @@ with_ratio as (
     from joined
 ),
 
+-- Compute daily change first so it can be used in rolling stddev
+with_daily_change as (
+    select
+        *,
+        hy_oas - lag(hy_oas, 1)  over (order by date) as hy_oas_daily_chg,
+        hy_oas - lag(hy_oas, 21) over (order by date) as hy_oas_mom_21d,
+        hy_oas - lag(hy_oas, 63) over (order by date) as hy_oas_mom_63d
+    from with_ratio
+),
+
+-- Now apply rolling aggregates — no nesting
 with_features as (
     select
         date,
         hy_oas,
         ig_oas,
         hy_ig_spread_ratio,
+        hy_oas_mom_21d,
+        hy_oas_mom_63d,
 
         (hy_oas - avg(hy_oas) over w252) / nullif(stddev(hy_oas) over w252, 0)
             as hy_oas_zscore_252d,
@@ -40,19 +53,13 @@ with_features as (
         (ig_oas - avg(ig_oas) over w252) / nullif(stddev(ig_oas) over w252, 0)
             as ig_oas_zscore_252d,
 
-        hy_oas - lag(hy_oas, 21) over (order by date)  as hy_oas_mom_21d,
-        hy_oas - lag(hy_oas, 63) over (order by date)  as hy_oas_mom_63d,
-
-        stddev(hy_oas - lag(hy_oas, 1) over (order by date)) over w21
-            as hy_oas_vol_21d,
-
-        stddev(hy_oas - lag(hy_oas, 1) over (order by date)) over w63
-            as hy_oas_vol_63d,
+        stddev(hy_oas_daily_chg) over w21  as hy_oas_vol_21d,
+        stddev(hy_oas_daily_chg) over w63  as hy_oas_vol_63d,
 
         avg(hy_oas) over w63   as hy_oas_avg_63d,
         avg(hy_oas) over w252  as hy_oas_avg_252d
 
-    from with_ratio
+    from with_daily_change
     window
         w21  as (order by date rows between 20 preceding and current row),
         w63  as (order by date rows between 62 preceding and current row),

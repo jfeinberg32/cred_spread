@@ -1,0 +1,26 @@
+{
+  "trained_at": "2026-06-16T01:10:21.332381",
+  "n_components": 3,
+  "feature_cols": [
+    "hy_oas_zscore_252d",
+    "ig_oas_zscore_252d",
+    "vix_zscore_252d",
+    "hy_oas_mom_21d",
+    "hy_oas_vol_21d",
+    "stress_composite"
+  ],
+  "regime_labels": {
+    "0": "stress",
+    "1": "compression",
+    "2": "elevated"
+  },
+  "bic_scores": {
+    "2": -1197313.52,
+    "3": -1406593.49
+  },
+  "train_start": "2024-06-04 00:00:00",
+  "train_end": "2026-06-12 00:00:00",
+  "n_obs": 504,
+  "covariance_type": "full",
+  "converged": true
+}
