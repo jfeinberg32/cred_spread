@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: int_spread__features
+    description: >
+      Joins HY and IG OAS with rolling statistical features.
+      Produces z-scores, momentum, and volatility signals.
+    columns:
+      - name: date
+        tests: [not_null, unique]
+      - name: hy_oas
+        tests: [not_null]
+      - name: ig_oas
+        tests: [not_null]
+
+  - name: int_spread__cross_asset
+    description: >
+      Joins spread features with VIX, yield curve, and TED spread.
+    columns:
+      - name: date
+        tests: [not_null, unique]

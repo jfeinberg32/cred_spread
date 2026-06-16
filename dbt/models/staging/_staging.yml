@@ -1,0 +1,49 @@
+version: 2
+
+models:
+  - name: stg_fred__hy_oas
+    description: "Staged ICE BofA US High Yield OAS. Business days only, nulls forward-filled."
+    columns:
+      - name: date
+        tests: [not_null, unique]
+      - name: hy_oas
+        description: "Option-adjusted spread in percentage points"
+        tests:
+          - not_null
+          - assert_no_negative_oas
+
+  - name: stg_fred__ig_oas
+    description: "Staged ICE BofA US Investment Grade OAS. Business days only, nulls forward-filled."
+    columns:
+      - name: date
+        tests: [not_null, unique]
+      - name: ig_oas
+        tests:
+          - not_null
+          - assert_no_negative_oas
+
+  - name: stg_fred__ted_spread
+    description: "Staged TED Spread. Available through 2023-06-30 only."
+    columns:
+      - name: date
+        tests: [not_null, unique]
+      - name: ted_spread
+        description: "TED spread in percentage points. Nulls expected post-2023."
+
+  - name: stg_fred__yield_curve
+    description: "Staged 10Y-2Y Treasury spread. Negative values are valid."
+    columns:
+      - name: date
+        tests: [not_null, unique]
+      - name: yield_curve
+        tests:
+          - not_null
+
+  - name: stg_fred__vix
+    description: "Staged CBOE VIX index."
+    columns:
+      - name: date
+        tests: [not_null, unique]
+      - name: vix
+        tests:
+          - not_null

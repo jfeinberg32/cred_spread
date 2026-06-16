@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: mart_regime__features
+    description: >
+      Final model-ready feature set for the HMM regime detector.
+      Only rows with a complete feature vector are included.
+      First 252 trading days dropped for z-score warmup.
+    columns:
+      - name: date
+        tests: [not_null, unique]
+      - name: hy_oas
+        tests: [not_null]
+      - name: ig_oas
+        tests: [not_null]
+      - name: vix
+        tests: [not_null]
+      - name: yield_curve
+        tests: [not_null]
+      - name: hy_oas_zscore_252d
+        tests: [not_null]
+      - name: hy_oas_mom_21d
+        tests: [not_null]
+      - name: hy_oas_vol_21d
+        tests: [not_null]
+      - name: stress_composite
+        tests: [not_null]

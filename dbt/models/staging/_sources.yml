@@ -1,0 +1,28 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "Append-only raw tables loaded by ingestion.py"
+    schema: raw
+    tables:
+      - name: fred_series
+        description: "All FRED series ingested daily. One row per date per series."
+        columns:
+          - name: date
+            description: "Observation date"
+            tests:
+              - not_null
+          - name: series_name
+            description: "Internal series identifier"
+            tests:
+              - not_null
+          - name: series_id
+            description: "FRED series ID"
+            tests:
+              - not_null
+          - name: value
+            description: "Observed value. Nulls expected for weekends and holidays."
+          - name: ingested_at
+            description: "UTC timestamp of ingestion run"
+            tests:
+              - not_null

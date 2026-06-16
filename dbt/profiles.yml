@@ -1,0 +1,7 @@
+credit_regime:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "md:credit_regime?motherduck_token={{ env_var('MOTHERDUCK_TOKEN') }}"
+      threads: 4
