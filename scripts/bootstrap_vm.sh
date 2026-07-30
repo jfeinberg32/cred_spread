@@ -2,8 +2,18 @@
 #
 # bootstrap_vm.sh — one-shot setup of the cred_spread pipeline on a fresh VM.
 #
-#   git clone https://github.com/jfeinberg32/cred_spread.git /opt/cred_spread
+#   sudo mkdir -p /opt/cred_spread && sudo chown "$USER" /opt/cred_spread
+#   curl -sL https://github.com/jfeinberg32/cred_spread/archive/refs/heads/main.tar.gz \
+#     | tar xz --strip-components=1 -C /opt/cred_spread
 #   cd /opt/cred_spread && bash scripts/bootstrap_vm.sh
+#
+# The tarball fetch is deliberate — it needs only curl, whereas `git clone`
+# needs git, which on a minimal Oracle Linux image means invoking dnf. On a
+# 498 MB instance dnf loads enough repo metadata to render the box unusable
+# for 15+ minutes, so this script avoids it entirely and uses uv instead:
+# uv ships a static binary, fetches its own standalone CPython, and resolved
+# and installed this project's full dependency tree in 50 seconds where pip
+# would have taken 5-15 minutes and risked an OOM.
 #
 # Idempotent: safe to re-run after fixing a failure. Prompts for the three
 # secrets it needs (FRED, MotherDuck, Prefect) rather than taking them as
@@ -26,28 +36,17 @@ die()  { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 # 0. Platform + memory
 # ---------------------------------------------------------------------------
 
-if   command -v dnf     >/dev/null 2>&1; then PKG=dnf
-elif command -v apt-get >/dev/null 2>&1; then PKG=apt
-else die "Neither dnf nor apt-get found — unsupported distro"
-fi
-
-pkg_install() {
-    case "$PKG" in
-        dnf) sudo dnf install -y -q "$@" ;;
-        apt) sudo apt-get install -y -qq "$@" ;;
-    esac
-}
-
-say "Platform: $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m), pkg=$PKG)"
+say "Platform: $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m))"
 
 MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
 SWAP_MB=$(free -m | awk '/^Swap:/{print $2}')
 echo "    RAM ${MEM_MB}MB, swap ${SWAP_MB}MB"
 
-# Prefect's worker plus a flow subprocess importing pandas/duckdb/dbt can
-# transiently want well over a gigabyte. Below ~2 GB of RAM+swap combined,
-# pip's resolver or the first flow run gets OOM-killed rather than merely
-# running slowly, so refuse instead of failing halfway through.
+# Measured on VM.Standard.E2.1.Micro: a full import of prefect + pandas +
+# numpy + duckdb + sklearn + hmmlearn peaks at ~184 MB RSS, so 498 MB of RAM
+# is genuinely workable. What is not workable is having no swap headroom —
+# the worker and a flow subprocess coexist, and dbt adds a third process.
+# Require ~2 GB combined so peaks swap rather than getting OOM-killed.
 if [ $((MEM_MB + SWAP_MB)) -lt 2000 ]; then
     die "Only $((MEM_MB + SWAP_MB))MB RAM+swap. Add swap first:
     sudo dd if=/dev/zero of=/swapfile-4g bs=1M count=4096
@@ -56,77 +55,37 @@ if [ $((MEM_MB + SWAP_MB)) -lt 2000 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Python
-# ---------------------------------------------------------------------------
-# hmmlearn publishes wheels for cp310-cp313 only. Outside that range pip falls
-# back to a source build, which needs a compiler and a lot of RAM. Refuse
-# rather than silently do that on a small instance.
-
-say "Locating a suitable Python (3.10-3.13)"
-
-find_python() {
-    for candidate in python3.12 python3.11 python3.13 python3.10 python3; do
-        command -v "$candidate" >/dev/null 2>&1 || continue
-        ver=$("$candidate" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null) || continue
-        minor=${ver##*.}
-        if [ "${ver%%.*}" -eq 3 ] && [ "$minor" -ge 10 ] && [ "$minor" -le 13 ]; then
-            command -v "$candidate"; return 0
-        fi
-    done
-    return 1
-}
-
-PY=$(find_python) || {
-    warn "System Python is out of range — installing 3.12"
-    case "$PKG" in
-        dnf)
-            # Oracle Linux 9 / RHEL 9 carry parallel-installable 3.11 and 3.12
-            # in AppStream. They coexist with the system 3.9 that dnf itself
-            # depends on, so this never disturbs the package manager.
-            pkg_install python3.12 python3.12-pip || pkg_install python3.11 python3.11-pip
-            ;;
-        apt)
-            sudo apt-get update -qq
-            pkg_install python3.12 python3.12-venv || {
-                warn "python3.12 not in the archive; adding deadsnakes"
-                pkg_install software-properties-common
-                sudo add-apt-repository -y ppa:deadsnakes/ppa
-                sudo apt-get update -qq
-                pkg_install python3.12 python3.12-venv
-            }
-            ;;
-    esac
-    PY=$(find_python) || die "Python 3.10-3.13 install failed"
-}
-
-echo "    using $PY ($("$PY" --version))"
-
-command -v git >/dev/null 2>&1 || pkg_install git
-
-# ---------------------------------------------------------------------------
-# 2. Virtualenv
+# 1. uv
 # ---------------------------------------------------------------------------
 
-say "Building virtualenv at $VENV"
+say "Ensuring uv is available"
 
-if [ ! -d "$VENV" ]; then
-    "$PY" -m venv "$VENV" || {
-        warn "venv module missing — installing it"
-        pyver=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
-        case "$PKG" in
-            dnf) pkg_install "python${pyver}" ;;
-            apt) pkg_install "python${pyver}-venv" ;;
-        esac
-        "$PY" -m venv "$VENV"
-    }
+export PATH="$HOME/.local/bin:$PATH"
+
+if command -v uv >/dev/null 2>&1; then
+    echo "    already installed ($(uv --version))"
+else
+    command -v curl >/dev/null 2>&1 || die "curl is required to install uv"
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+    hash -r
+    command -v uv >/dev/null 2>&1 || die "uv install failed"
+    echo "    installed $(uv --version)"
 fi
 
-"$VENV/bin/pip" install --quiet --upgrade pip
+# ---------------------------------------------------------------------------
+# 2. Python + dependencies
+# ---------------------------------------------------------------------------
+# hmmlearn publishes wheels for cp310-cp313 only; outside that range pip falls
+# back to a source build needing a compiler and a lot of RAM. Pinning 3.12
+# keeps every dependency on a prebuilt wheel.
 
-say "Installing requirements — expect 5-15 minutes on a small instance"
-# --no-cache-dir keeps pip from writing (and holding) a wheel cache, which
-# matters more for peak memory than for disk on a low-RAM box.
-"$VENV/bin/pip" install --quiet --no-cache-dir -r requirements.txt
+say "Installing Python 3.12 and the virtualenv"
+
+uv python install 3.12
+uv venv --python 3.12 "$VENV"
+
+say "Resolving dependencies"
+uv pip install --python "$VENV/bin/python" -r requirements.txt
 echo "    done"
 
 # ---------------------------------------------------------------------------
