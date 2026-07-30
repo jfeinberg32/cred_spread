@@ -23,42 +23,85 @@ warn() { printf '\033[1;33m    %s\033[0m\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# 0. Platform + memory
+# ---------------------------------------------------------------------------
+
+if   command -v dnf     >/dev/null 2>&1; then PKG=dnf
+elif command -v apt-get >/dev/null 2>&1; then PKG=apt
+else die "Neither dnf nor apt-get found — unsupported distro"
+fi
+
+pkg_install() {
+    case "$PKG" in
+        dnf) sudo dnf install -y -q "$@" ;;
+        apt) sudo apt-get install -y -qq "$@" ;;
+    esac
+}
+
+say "Platform: $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m), pkg=$PKG)"
+
+MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
+SWAP_MB=$(free -m | awk '/^Swap:/{print $2}')
+echo "    RAM ${MEM_MB}MB, swap ${SWAP_MB}MB"
+
+# Prefect's worker plus a flow subprocess importing pandas/duckdb/dbt can
+# transiently want well over a gigabyte. Below ~2 GB of RAM+swap combined,
+# pip's resolver or the first flow run gets OOM-killed rather than merely
+# running slowly, so refuse instead of failing halfway through.
+if [ $((MEM_MB + SWAP_MB)) -lt 2000 ]; then
+    die "Only $((MEM_MB + SWAP_MB))MB RAM+swap. Add swap first:
+    sudo dd if=/dev/zero of=/swapfile-4g bs=1M count=4096
+    sudo chmod 600 /swapfile-4g && sudo mkswap /swapfile-4g && sudo swapon /swapfile-4g
+    echo '/swapfile-4g none swap sw 0 0' | sudo tee -a /etc/fstab"
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Python
 # ---------------------------------------------------------------------------
-# hmmlearn publishes aarch64 wheels for cp310-cp313 only. Outside that range
-# pip falls back to a source build, which needs a compiler and several minutes
-# of RAM-hungry work on a 12 GB box. Refuse rather than silently do that.
+# hmmlearn publishes wheels for cp310-cp313 only. Outside that range pip falls
+# back to a source build, which needs a compiler and a lot of RAM. Refuse
+# rather than silently do that on a small instance.
 
 say "Locating a suitable Python (3.10-3.13)"
 
-PY=""
-for candidate in python3.12 python3.11 python3.13 python3.10 python3; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        ver=$("$candidate" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
-        major=${ver%%.*}; minor=${ver##*.}
-        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ] && [ "$minor" -le 13 ]; then
-            PY=$(command -v "$candidate"); break
+find_python() {
+    for candidate in python3.12 python3.11 python3.13 python3.10 python3; do
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        ver=$("$candidate" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null) || continue
+        minor=${ver##*.}
+        if [ "${ver%%.*}" -eq 3 ] && [ "$minor" -ge 10 ] && [ "$minor" -le 13 ]; then
+            command -v "$candidate"; return 0
         fi
-    fi
-done
+    done
+    return 1
+}
 
-if [ -z "$PY" ]; then
-    warn "No usable Python found — installing python3.12"
-    sudo apt-get update -qq
-    if ! sudo apt-get install -y python3.12 python3.12-venv 2>/dev/null; then
-        # Ubuntu 22.04 and older don't carry 3.12 in the default archive
-        warn "python3.12 not in the archive; adding deadsnakes"
-        sudo apt-get install -y software-properties-common
-        sudo add-apt-repository -y ppa:deadsnakes/ppa
-        sudo apt-get update -qq
-        sudo apt-get install -y python3.12 python3.12-venv
-    fi
-    PY=$(command -v python3.12) || die "python3.12 install failed"
-fi
+PY=$(find_python) || {
+    warn "System Python is out of range — installing 3.12"
+    case "$PKG" in
+        dnf)
+            # Oracle Linux 9 / RHEL 9 carry parallel-installable 3.11 and 3.12
+            # in AppStream. They coexist with the system 3.9 that dnf itself
+            # depends on, so this never disturbs the package manager.
+            pkg_install python3.12 python3.12-pip || pkg_install python3.11 python3.11-pip
+            ;;
+        apt)
+            sudo apt-get update -qq
+            pkg_install python3.12 python3.12-venv || {
+                warn "python3.12 not in the archive; adding deadsnakes"
+                pkg_install software-properties-common
+                sudo add-apt-repository -y ppa:deadsnakes/ppa
+                sudo apt-get update -qq
+                pkg_install python3.12 python3.12-venv
+            }
+            ;;
+    esac
+    PY=$(find_python) || die "Python 3.10-3.13 install failed"
+}
 
 echo "    using $PY ($("$PY" --version))"
 
-command -v git >/dev/null 2>&1 || sudo apt-get install -y git
+command -v git >/dev/null 2>&1 || pkg_install git
 
 # ---------------------------------------------------------------------------
 # 2. Virtualenv
@@ -68,16 +111,22 @@ say "Building virtualenv at $VENV"
 
 if [ ! -d "$VENV" ]; then
     "$PY" -m venv "$VENV" || {
-        warn "venv module missing — installing the matching -venv package"
+        warn "venv module missing — installing it"
         pyver=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
-        sudo apt-get install -y "python${pyver}-venv"
+        case "$PKG" in
+            dnf) pkg_install "python${pyver}" ;;
+            apt) pkg_install "python${pyver}-venv" ;;
+        esac
         "$PY" -m venv "$VENV"
     }
 fi
 
 "$VENV/bin/pip" install --quiet --upgrade pip
-say "Installing requirements (a few minutes on 2 OCPU)"
-"$VENV/bin/pip" install --quiet -r requirements.txt
+
+say "Installing requirements — expect 5-15 minutes on a small instance"
+# --no-cache-dir keeps pip from writing (and holding) a wheel cache, which
+# matters more for peak memory than for disk on a low-RAM box.
+"$VENV/bin/pip" install --quiet --no-cache-dir -r requirements.txt
 echo "    done"
 
 # ---------------------------------------------------------------------------
@@ -216,7 +265,10 @@ EnvironmentFile=$REPO_DIR/.env
 ExecStart=$VENV/bin/prefect worker start --pool $WORK_POOL
 Restart=always
 RestartSec=15
-MemoryMax=8G
+# No MemoryMax: on a small instance the kernel OOM killer plus swap is the
+# backstop, and a hard cap here just guarantees the worker dies during a
+# flow run instead of swapping through it.
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target
