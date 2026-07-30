@@ -82,7 +82,14 @@ fi
 say "Installing Python 3.12 and the virtualenv"
 
 uv python install 3.12
-uv venv --python 3.12 "$VENV"
+
+# Don't use --clear here: on a re-run that would discard a perfectly good
+# environment and force the whole dependency tree to be reinstalled.
+if [ -d "$VENV" ]; then
+    echo "    virtualenv already exists at $VENV"
+else
+    uv venv --python 3.12 "$VENV"
+fi
 
 say "Resolving dependencies"
 uv pip install --python "$VENV/bin/python" -r requirements.txt
@@ -121,12 +128,15 @@ fi
 # the error arrives wrapped in orchestration noise.
 
 say "Smoke test: MotherDuck connectivity"
-"$VENV/bin/python" - <<'PYEOF'
+# ENV_PATH is passed explicitly because this runs as `python -` (stdin), and
+# dotenv's find_dotenv() locates .env by walking back up the call stack —
+# with no calling file it asserts on frame.f_back being None.
+ENV_PATH="$REPO_DIR/.env" "$VENV/bin/python" - <<'PYEOF'
 import os, sys
 from dotenv import load_dotenv
 import duckdb
 
-load_dotenv()
+load_dotenv(os.environ["ENV_PATH"])
 tok = os.getenv("MOTHERDUCK_TOKEN")
 db  = os.getenv("MOTHERDUCK_DB", "cred_spread")
 if not tok:

@@ -10,7 +10,12 @@ dbt-core>=1.9,<1.13
 dbt-duckdb>=1.9,<2
 
 # --- warehouse ---
-duckdb>=1.0,<2          # `md:` connection string pulls the motherduck extension at runtime
+# The `md:` connection string pulls MotherDuck's extension at runtime, and that
+# extension refuses to load against a DuckDB newer than it supports. MotherDuck
+# trails upstream DuckDB releases by weeks, so an open upper bound breaks the
+# pipeline the moment a new DuckDB ships. 1.5.5 was rejected in exactly this
+# way; raise this ceiling only after confirming MotherDuck supports the version.
+duckdb>=1.0,<1.5.5
 
 # --- ingestion ---
 fredapi>=0.5,<0.6
