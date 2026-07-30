@@ -25,6 +25,7 @@ Usage:
 """
 
 import os
+import io
 import json
 import logging
 from datetime import datetime
@@ -36,6 +37,8 @@ import pandas as pd
 import duckdb
 import joblib
 from dotenv import load_dotenv
+
+import model_store
 
 # ---------------------------------------------------------------------------
 # Config
@@ -67,6 +70,30 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Load model artifacts
 # ---------------------------------------------------------------------------
+
+def load_model_artifacts_from_store(conn: duckdb.DuckDBPyConnection) -> Optional[tuple]:
+    """
+    Load the newest HMM artifact from MotherDuck.
+
+    This is the path a Flight run takes: the runtime filesystem is ephemeral,
+    so there are no model files on disk, and the warehouse copy is the only
+    one that survives between runs. Returns None if nothing has been trained
+    yet, letting the caller fall back to local files.
+    """
+    found = model_store.load_latest(conn, "hmm")
+    if found is None:
+        return None
+
+    payload, metadata, version = found
+    artifacts = joblib.load(io.BytesIO(payload))
+
+    log.info(f"Model loaded from MotherDuck: 'hmm' version {version}, "
+             f"n_components={metadata['n_components']}, "
+             f"trained_at={metadata['trained_at']}")
+    log.info(f"Regime labels: {metadata['regime_labels']}")
+
+    return artifacts["model"], artifacts["scaler"], metadata
+
 
 def load_model_artifacts() -> tuple:
     """
@@ -322,13 +349,22 @@ def run_scoring(full_refresh: bool = False) -> None:
     if not MOTHERDUCK_TOKEN:
         raise ValueError("MOTHERDUCK_TOKEN not set")
 
-    model, scaler, metadata = load_model_artifacts()
-
     conn = duckdb.connect(
         f"md:{MOTHERDUCK_DB}?motherduck_token={MOTHERDUCK_TOKEN}"
     )
 
     try:
+        # Prefer the warehouse copy. Local files are a development fallback
+        # only — inside a Flight there is nothing on disk to fall back to.
+        artifacts = load_model_artifacts_from_store(conn)
+        if artifacts is None:
+            log.warning(
+                "No 'hmm' artifact in MotherDuck — falling back to local "
+                "model files. Run hmm_trainer.py to populate the store."
+            )
+            artifacts = load_model_artifacts()
+        model, scaler, metadata = artifacts
+
         bootstrap_ml_schema(conn)
 
         if full_refresh:

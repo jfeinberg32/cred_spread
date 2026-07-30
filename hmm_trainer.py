@@ -15,6 +15,7 @@ Usage:
 """
 
 import os
+import io
 import json
 import logging
 import joblib
@@ -28,6 +29,8 @@ import duckdb
 from hmmlearn.hmm import GaussianHMM
 from sklearn.preprocessing import StandardScaler
 from dotenv import load_dotenv
+
+import model_store
 
 # ---------------------------------------------------------------------------
 # Config
@@ -279,7 +282,14 @@ def save_model(
     dates: pd.Series,
     n_components: int,
 ) -> None:
-    """Save model, scaler, and metadata to models/ directory."""
+    """
+    Persist the model to MotherDuck, and to models/ as a local convenience.
+
+    MotherDuck is the authoritative copy: Flight runtimes have an ephemeral
+    filesystem, so the on-disk files never survive a scheduled run. The local
+    write is kept only so `python hmm_trainer.py` remains inspectable during
+    development.
+    """
     MODEL_DIR.mkdir(exist_ok=True)
 
     # Serialize model and scaler together — scorer needs both
@@ -304,6 +314,20 @@ def save_model(
         json.dump(metadata, f, indent=2)
 
     log.info(f"Metadata saved to {MODEL_DIR / 'hmm_metadata.json'}")
+
+    # Authoritative copy: same bytes joblib just wrote, stored in the warehouse
+    # so a Flight run can read back what another Flight run trained.
+    buf = io.BytesIO()
+    joblib.dump({"model": model, "scaler": scaler}, buf)
+
+    conn = duckdb.connect(
+        f"md:{MOTHERDUCK_DB}?motherduck_token={MOTHERDUCK_TOKEN}"
+    )
+    try:
+        version = model_store.save(conn, "hmm", buf.getvalue(), metadata)
+        log.info(f"Model persisted to MotherDuck as 'hmm' version {version}")
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

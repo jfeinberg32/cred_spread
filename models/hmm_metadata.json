@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-06-16T01:10:21.332381",
+  "trained_at": "2026-07-30T18:01:55.780648",
   "n_components": 3,
   "feature_cols": [
     "hy_oas_zscore_252d",
@@ -10,17 +10,17 @@
     "stress_composite"
   ],
   "regime_labels": {
-    "0": "stress",
-    "1": "compression",
+    "0": "compression",
+    "1": "stress",
     "2": "elevated"
   },
   "bic_scores": {
-    "2": -1197313.52,
-    "3": -1406593.49
+    "2": -1380182.54,
+    "3": -1683207.63
   },
   "train_start": "2024-06-04 00:00:00",
-  "train_end": "2026-06-12 00:00:00",
-  "n_obs": 504,
+  "train_end": "2026-07-28 00:00:00",
+  "n_obs": 555,
   "covariance_type": "full",
   "converged": true
 }
