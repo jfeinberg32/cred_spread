@@ -64,9 +64,7 @@ def flight_requirements() -> str:
     return "\n".join(lines)
 
 
-def upsert(con, name: str, source: str, requirements: str,
-           mode: str, cron: str | None) -> str:
-    """Create the Flight, or update it in place if it already exists."""
+def _upsert_once(con, name, source, requirements, mode, cron):
     existing = con.execute(
         "SELECT flight_id FROM MD_LIST_FLIGHTS() WHERE flight_name = ?", [name]
     ).fetchall()
@@ -89,7 +87,7 @@ def upsert(con, name: str, source: str, requirements: str,
         )
         print(f"  updated {name} ({fid})")
     else:
-        row = con.execute(
+        fid = con.execute(
             f"""SELECT flight_id FROM MD_CREATE_FLIGHT(
                     name := ?,
                     source_code := ?,
@@ -99,11 +97,35 @@ def upsert(con, name: str, source: str, requirements: str,
                     flight_secret_names := ['{SECRET_NAME}'],
                     max_runtime_sec := 1800)""",
             [name, source, requirements],
-        ).fetchone()
-        fid = row[0]
+        ).fetchone()[0]
         print(f"  created {name} ({fid})")
 
     return fid
+
+
+def upsert(con, name: str, source: str, requirements: str,
+           mode: str, cron=None) -> str:
+    """
+    Create or update the Flight, falling back to on-demand if the account
+    can't schedule.
+
+    MotherDuck gates `schedule_cron` behind the Business plan — on anything
+    lower it raises PermissionException. The Flight itself is still perfectly
+    usable on demand, so degrade rather than fail: something external
+    (GitHub Actions) can trigger it on a cron instead.
+    """
+    if cron is None:
+        return _upsert_once(con, name, source, requirements, mode, None)
+
+    try:
+        return _upsert_once(con, name, source, requirements, mode, cron)
+    except duckdb.PermissionException as e:
+        if "Scheduled runs" not in str(e):
+            raise
+        print(f"  ! scheduling unavailable on this plan — creating {name} "
+              f"as on-demand only")
+        print(f"    ({str(e).splitlines()[0]})")
+        return _upsert_once(con, name, source, requirements, mode, None)
 
 
 def wait_for_run(con, fid, run_number, timeout_sec=1800) -> str:

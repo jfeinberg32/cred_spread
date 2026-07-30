@@ -11,7 +11,16 @@ models:
       - name: hy_oas
         tests: [not_null]
       - name: ig_oas
-        tests: [not_null]
+        # Warn rather than error. The two ICE BofA series do not always
+        # publish on the same days — 2024-12-24 has an HY print with no IG
+        # print — so isolated gaps are a property of the source, not a
+        # defect. mart_regime__features already drops rows with a null
+        # ig_oas, so nothing missing ever reaches the HMM. Erroring here
+        # would halt the whole pipeline over a single holiday.
+        tests:
+          - not_null:
+              config:
+                severity: warn
 
   - name: int_spread__cross_asset
     description: >
