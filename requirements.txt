@@ -1,0 +1,27 @@
+# Python 3.12 — hmmlearn ships aarch64 wheels for cp310-cp313 only, so on an
+# Oracle Ampere A1 (ARM) VM anything newer builds from source. 3.12 also keeps
+# numpy/pandas/scikit-learn on prebuilt wheels for aarch64.
+
+# --- orchestration ---
+prefect>=3.1,<4
+
+# --- transformation ---
+dbt-core>=1.9,<1.13
+dbt-duckdb>=1.9,<2
+
+# --- warehouse ---
+duckdb>=1.0,<2          # `md:` connection string pulls the motherduck extension at runtime
+
+# --- ingestion ---
+fredapi>=0.5,<0.6
+python-dotenv>=1.0,<2
+
+# --- modeling ---
+# pandas held below 3.0 on purpose: the ingestion/scoring scripts were written
+# and validated against the 2.x API, and 3.0 changes string dtype and
+# copy-on-write defaults. Move the cap once you've re-run the pipeline against it.
+pandas>=2.2,<3.0
+numpy>=1.26,<3
+scikit-learn>=1.4,<2
+hmmlearn>=0.3.2,<0.4
+joblib>=1.3,<2

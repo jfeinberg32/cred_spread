@@ -46,7 +46,9 @@ load_dotenv()
 MOTHERDUCK_TOKEN = os.getenv("MOTHERDUCK_TOKEN")
 MOTHERDUCK_DB    = os.getenv("MOTHERDUCK_DB", "cred_spread")
 
-MODEL_DIR        = Path("models")
+# Resolved from this file, not the cwd — the Prefect worker's working
+# directory is not guaranteed to be the repo root.
+MODEL_DIR        = Path(__file__).resolve().parent / "models"
 MODEL_PATH       = MODEL_DIR / "hmm_model.pkl"
 METADATA_PATH    = MODEL_DIR / "hmm_metadata.json"
 
@@ -136,13 +138,18 @@ def get_latest_scored_date(conn: duckdb.DuckDBPyConnection) -> Optional[object]:
 
 
 def filter_unscored(df: pd.DataFrame, latest: Optional[object]) -> pd.DataFrame:
-    """Return only rows newer than the latest scored date."""
+    """
+    Return only rows newer than the latest scored date.
+
+    Applied to scoring *output*, not input — see run_scoring() for why the
+    HMM must see the full sequence even when only a few rows get inserted.
+    """
     if latest is None:
-        log.info("No existing predictions — scoring full history")
+        log.info("No existing predictions — inserting full history")
         return df
 
-    new_rows = df[df["date"] > pd.Timestamp(latest).date()]
-    log.info(f"Latest scored date: {latest} — {len(new_rows)} new rows to score")
+    new_rows = df[pd.to_datetime(df["date"]) > pd.Timestamp(latest)]
+    log.info(f"Latest scored date: {latest} — {len(new_rows)} new rows to insert")
     return new_rows
 
 
@@ -295,7 +302,21 @@ def log_current_regime(conn: duckdb.DuckDBPyConnection) -> None:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def run_scoring() -> None:
+def run_scoring(full_refresh: bool = False) -> None:
+    """
+    Score the feature mart and append new rows to ml.regime_predictions.
+
+    The HMM is always decoded over the *full* feature history, then the result
+    is filtered down to unscored dates. Filtering first would hand Viterbi a
+    short isolated sequence — on a daily schedule that's a handful of rows —
+    which restarts decoding from the model's initial state distribution and
+    throws away exactly the transition stickiness the HMM is there to provide.
+    Decoding ~2k rows is milliseconds, so there is no reason to do otherwise.
+
+    full_refresh=True clears the table and reinserts everything. Use it after
+    retraining, when a new fit may have permuted the hidden state indices and
+    the existing rows are no longer comparable to new ones.
+    """
     log.info("=== Regime scoring started ===")
 
     if not MOTHERDUCK_TOKEN:
@@ -310,16 +331,28 @@ def run_scoring() -> None:
     try:
         bootstrap_ml_schema(conn)
 
-        features    = load_features(conn, metadata["feature_cols"])
-        latest      = get_latest_scored_date(conn)
-        new_features = filter_unscored(features, latest)
+        if full_refresh:
+            log.warning("full_refresh=True — clearing ml.regime_predictions")
+            conn.execute("DELETE FROM ml.regime_predictions")
+            latest = None
+        else:
+            latest = get_latest_scored_date(conn)
 
-        if new_features.empty:
+        features = load_features(conn, metadata["feature_cols"])
+
+        if features.empty:
+            log.info("Feature mart is empty — nothing to score")
+            return
+
+        # Decode the whole sequence, then keep only the unscored tail.
+        results = score_regimes(features, model, scaler, metadata)
+        new_results = filter_unscored(results, latest)
+
+        if new_results.empty:
             log.info("All rows already scored — nothing to do")
             return
 
-        results = score_regimes(new_features, model, scaler, metadata)
-        load_predictions(conn, results)
+        load_predictions(conn, new_results)
         log_current_regime(conn)
 
     finally:
@@ -329,4 +362,14 @@ def run_scoring() -> None:
 
 
 if __name__ == "__main__":
-    run_scoring()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Score credit spread regimes")
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="clear ml.regime_predictions and rescore all history",
+    )
+    args = parser.parse_args()
+
+    run_scoring(full_refresh=args.full_refresh)

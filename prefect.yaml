@@ -1,0 +1,60 @@
+# Deployment definitions for the credit spread regime pipeline.
+#
+# On the VM, once:
+#   prefect cloud login
+#   prefect work-pool create vm-process-pool --type process
+#   prefect deploy --all
+#
+# Two of the five deployments allowed on the Prefect Cloud free tier.
+# See DEPLOYMENT.md for the full VM setup.
+
+name: cred-spread
+prefect-version: ">=3.1"
+
+# Code already lives on the VM (deployed by git pull), so the worker just
+# needs to be pointed at it. Swap in the git_clone step below if you would
+# rather have each run pull a fresh copy from GitHub.
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /opt/cred_spread
+  # - prefect.deployments.steps.git_clone:
+  #     repository: https://github.com/<you>/cred_spread.git
+  #     branch: main
+
+definitions:
+  work_pool: &work_pool
+    name: vm-process-pool
+    work_queue_name: default
+
+deployments:
+  # Daily refresh. Scores with the model already on disk — never retrains,
+  # so regime labels stay comparable from one run to the next.
+  - name: daily-regime-refresh
+    entrypoint: flows.py:credit_spread_pipeline_flow
+    description: >
+      Pull new FRED observations, rebuild the dbt models, and score the
+      latest days into ml.regime_predictions.
+    work_pool: *work_pool
+    schedules:
+      # 09:00 ET Mon-Fri. FRED publishes the OAS series on a one-business-day
+      # lag, so Monday's run picks up Friday's close.
+      - cron: "0 9 * * 1-5"
+        timezone: "America/New_York"
+        active: true
+
+  # Retraining is deliberately not on the daily path: a refit can permute the
+  # hidden state indices and change the BIC-selected n_components, which would
+  # leave ml.regime_predictions holding output from two different models.
+  # Trigger from the UI, or set active: true to retrain quarterly.
+  - name: hmm-retrain
+    entrypoint: flows.py:hmm_retrain_flow
+    description: >
+      Refit the GaussianHMM on the full feature mart and rebuild
+      ml.regime_predictions from scratch.
+    work_pool: *work_pool
+    parameters:
+      rescore_history: true
+    schedules:
+      - cron: "0 12 1 1,4,7,10 *"   # 12:00 ET, 1st of each quarter
+        timezone: "America/New_York"
+        active: false

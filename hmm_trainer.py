@@ -57,7 +57,9 @@ TOL       = 1e-4
 N_INIT    = 25       # manual random restarts — picks best log-likelihood
 COVAR     = "full"   # full covariance matrix per regime
 
-MODEL_DIR = Path("models")
+# Resolved from this file, not the cwd — the Prefect worker's working
+# directory is not guaranteed to be the repo root.
+MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 # ---------------------------------------------------------------------------
 # Logging
